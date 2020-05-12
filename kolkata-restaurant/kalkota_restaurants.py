@@ -32,7 +32,7 @@ def init(_boardname=None):
     game = Game('Cartes/' + name + '.json', SpriteBuilder)
     game.O = Ontology(True, 'SpriteSheet-32x32/tiny_spritesheet_ontology.csv')
     game.populate_sprite_names(game.O)
-    game.fps = 100  # frames per second
+    game.fps = 50  # frames per second
     game.mainiteration()
     game.mask.allow_overlaping_players = True
     #player = game.player
@@ -40,30 +40,67 @@ def init(_boardname=None):
 ######################################################################################
 class Client():
     def __init__(self, i, strat, nbR):
-        self.nbR = nbR
-        self.resto = random.randint(0,nbR-1)
-        self.strat = strat
+        self.nbR = nbR # nombre de restaurants
+        self.resto = random.randint(0,nbR-1) # resto cible
+        self.strat = strat # strat choisie
         self.score = 0
+        self.nbplay = 1 # Nombre d'itération de la stratégie
         self.id = i
-        self.dictio_strat = {0 : "aléatoire",1 : "tétu"}
         
-    def update_choix(self):
-        if self.strat == 0:
+    def update_choix(self, frequentation): 
+        """
+        Prend la liste de fréquentation des restaurant et applique la stratégie
+        de l'agent:
+        'aleatoire', 'tetu', 'moins_freq'
+        """
+        self.nbplay += 1
+        if self.strat == 'aleatoire':
             self.resto = random.randint(0,self.nbR-1)
         
+        elif self.strat == 'moins_freq':
+            """
+            choisi un restaurant au hasard parmis les restaurants les moins
+            fréquenté
+            """
+            tmp = np.where(frequentation == np.min(frequentation))[0]
+            self.resto = random.choice(tmp)
+            
+        elif self.strat == 'plus_freq':
+            """
+            choisi un restaurant au hasard parmis les restaurants les plus
+            fréquentés
+            Contre stratégie à moins_freq
+            """
+            tmp = np.where(not frequentation == np.min(frequentation))[0]
+            self.resto = random.choice(tmp)
+            
+        elif self.strat == 'moins_freq_alea':
+            """
+            choisi un restaurant au hasard avec une probabilité pour chaque restaurant 
+            correspondante à l'inverse du pourcentage de fréquentation
+            """
+            a = 10 - np.array(frequentation)
+            a = a/sum(a)
+            self.resto = np.where(np.random.multinomial(1,a))[0][0]
+            
+        elif self.strat == 'plus_freq_alea':
+            """
+            choisi un restaurant au hasard avec une probabilité pour chaque restaurant 
+            correspondante au pourcentage de fréquentation
+            """
+            a = np.array(frequentation)/sum(frequentation)
+            self.resto = np.where(np.random.multinomial(1,a))[0][0]
+            
     def toString(self):
-        return 'Client '+str(self.id)+' strat ' + self.dictio_strat.get(self.strat, "tétu")+" score : "+str(self.score)
+        return "Client :{} strat : {}\n\tmean score : {:07.3f} score : {}\n".format(self.id,self.strat,(self.score/self.nbplay),self.score)
 
 
 class Aetoile():
     def __init__(self, game):
         self.game = game
-        
         self.nbL = game.spriteBuilder.rowsize
         self.nbC = game.spriteBuilder.colsize
-        
         self.players = [o for o in game.layers['joueur']]
-        
         self.wallStates = [w.get_rowcol() for w in game.layers['obstacle']]
         self.restau = [o.get_rowcol() for o in game.layers['ramassable']]
         #self.posPlayers = [o.get_rowcol() for o in game.layers['joueur']]
@@ -78,16 +115,18 @@ class Aetoile():
             return True
         return False
                     
-    def strat(self, p, r):
+    def play(self, player, restaurant):
         """
-        Etabli la liste des cases qu'un joueur p doit empreinter pour atteindre le 
-        restaurant r utilisant l'algorithme de A*
+        player : numéro du joueur
+        restaurant : numéro du restaurant
+        Etabli la liste des cases qu'un joueur doit empreinter pour atteindre son 
+        restaurant, utilise l'algorithme A*
         """
         
-        r = self.restau[r]
+        row, col = self.players[player].get_rowcol()
+        r = self.restau[restaurant]
         
         frontier = PriorityQueue()
-        row, col = self.players[p].get_rowcol()
         l = {(row, col) : (-1, -1)} # Dictionnaire des péres
         
         #Liste des positions à parcourir
@@ -100,18 +139,22 @@ class Aetoile():
             for i in [(0,1),(0,-1),(1,0),(-1,0)]: #On regarde les 4 directions
                 x = row + i[0]
                 y = col + i[1]
-                #On explore la position si : elle correspond à une case valide,
-                #si elle n'a pas déjà été rajoutée aux positions a explorer
+                #On explore la position si c'est celle d'une case valide
+                # et si elle n'a pas déjà été rajoutée aux positions à explorer
                 if (x,y) not in l and self.move_possible(x,y):
                     m = self.manhattan_dst(r, x, y)
-                    #On rajoute la case dans la liste à explorer
+                    #On rajoute la case dans la liste "à explorer"
                     frontier.put((m +dst+1, x, y, dst+1))
                     l[(x,y)] = (row, col)# On indique que (row, col) est le pére de (x,y) 
         
-        def roll_back(posi):
+        # La case de départ possède un père (-1,-1)
+        # On remonte la liste des père des cases explorés du restaurant
+        # jusqu'à la case de (-1,-1)
+        def roll_back(posi):    
             if posi == (-1, -1):
                 return []
             return  roll_back(l[posi]) + [posi]
+        
         return roll_back(r)
         
             
@@ -159,9 +202,14 @@ def main():
         game.mainiteration()
         posPlayers[j]=(x,y)
     #-------------------------------
-    # chaque joueur choisit un restaurant
+    # chaque joueur choisit un restaurant et une stratégie
     #-------------------------------
-    clients=[Client(o, (o+1)%2, nbRestaus) for o in range(nbPlayers)]
+    
+    d = ["aleatoire", "tetu"]
+    #d = ["aleatoire", "tetu", "moins_freq"]
+    #d = ["plus_freq", "moins_freq"]
+    #d = ["plus_freq_alea", "moins_freq_alea"]
+    clients=[Client(o, d[(o+1)%len(d)], nbRestaus) for o in range(nbPlayers)]
     
 
     #-------------------------------
@@ -169,22 +217,30 @@ def main():
     #-------------------------------
     A = Aetoile(game)
     for i in range(20):
-        for j in range(nbPlayers): # on fait bouger chaque joueur séquentiellement
-            l = A.strat(j, clients[j].resto)
-            for i in l:
+    
+        resto = [[] for _ in range(nbRestaus)] # Liste des joueurs dans les restaurants
+        
+        for j in range(nbPlayers): 
+            # On établit la liste des cases de la position du joueur à son restaurant
+            l = A.play(j, clients[j].resto)
+            
+            for i in l: # On fait avancer le joueur
                 players[j].set_rowcol(i[0], i[1])
                 game.mainiteration()
                 #o = players[j].ramasse(game.layers)
                 #goalStates.remove((row,col)) # on enlève ce goalState de la liste
-        resto = [[] for _ in range(nbRestaus)]
+            
+            resto[clients[j].resto] += [clients[j].id]
+            
+        frequentation = [len(j) for j in resto]
         
-        for j in clients:
-            j.update_choix()
-            resto[j.resto] += [j.id]
-        
-        for j in resto:
+        for j in resto: # on compte les points
             if len(j) > 0:
                 clients[random.choice(j)].score += 1
+                
+        # On update les clients
+        for j in clients :
+            j.update_choix(frequentation)
     
     for i in clients:
         print(i.toString())
